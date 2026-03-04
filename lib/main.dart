@@ -1,61 +1,74 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:get/get.dart';
+import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:sentry_flutter/sentry_flutter.dart';
-import 'app/router.dart';
-import 'app/theme.dart';
-import 'shared/db/hive_boxes.dart';
+
+import 'app/routes/app_pages.dart';
+import 'app/theme/app_theme.dart';
+import 'app/bindings/initial_binding.dart';
+import 'app/translations/app_translations.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // 强制竖屏
-  await SystemChrome.setPreferredOrientations([
-    DeviceOrientation.portraitUp,
-    DeviceOrientation.portraitDown,
-  ]);
-
+  
   // 状态栏透明
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
-    statusBarIconBrightness: Brightness.light,
+    statusBarIconBrightness: Brightness.dark,
   ));
 
-  // 初始化本地存储
+  // 初始化 Hive
   await Hive.initFlutter();
-  await HiveBoxes.init();
+  await Hive.openBox('settings');
+  await Hive.openBox('cache');
 
-  await SentryFlutter.init(
-    (options) {
-      options.dsn = const String.fromEnvironment('SENTRY_DSN');
-      options.tracesSampleRate = 0.2;
-    },
-    appRunner: () => runApp(
-      const ProviderScope(child: MemoLensApp()),
-    ),
-  );
+  // 配置 EasyLoading
+  configLoading();
+
+  runApp(const MemoLensApp());
 }
 
-class MemoLensApp extends ConsumerWidget {
+void configLoading() {
+  EasyLoading.instance
+    ..displayDuration = const Duration(milliseconds: 2000)
+    ..indicatorType = EasyLoadingIndicatorType.fadingCircle
+    ..loadingStyle = EasyLoadingStyle.dark
+    ..indicatorSize = 45.0
+    ..radius = 12.0
+    ..maskColor = Colors.black.withOpacity(0.5)
+    ..userInteractions = false
+    ..dismissOnTap = false;
+}
+
+class MemoLensApp extends StatelessWidget {
   const MemoLensApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final router = ref.watch(routerProvider);
-    return MaterialApp.router(
+  Widget build(BuildContext context) {
+    return GetMaterialApp(
       title: 'MemoLens',
       debugShowCheckedModeBanner: false,
+      
+      // 主题
       theme: AppTheme.light,
       darkTheme: AppTheme.dark,
       themeMode: ThemeMode.system,
-      routerConfig: router,
-      localizationsDelegates: const [
-        // AppLocalizations.delegate,
-        // GlobalMaterialLocalizations.delegate,
-        // GlobalWidgetsLocalizations.delegate,
-        // GlobalCupertinoLocalizations.delegate,
-      ],
+      
+      // 国际化
+      translations: AppTranslations(),
+      locale: const Locale('zh', 'CN'),
+      fallbackLocale: const Locale('en', 'US'),
+      
+      // 路由
+      initialRoute: AppPages.initial,
+      getPages: AppPages.routes,
+      
+      // 全局绑定
+      initialBinding: InitialBinding(),
+      
+      // EasyLoading
+      builder: EasyLoading.init(),
     );
   }
 }

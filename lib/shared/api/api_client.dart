@@ -1,63 +1,110 @@
 import 'package:dio/dio.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../db/hive_boxes.dart';
-import 'models/record.dart';
+import 'package:get/get.dart' hide Response;
+import 'package:flutter_easyloading/flutter_easyloading.dart';
 
-const _base = String.fromEnvironment('API_BASE_URL', defaultValue: 'https://api.memolens.app');
+import '../services/storage_service.dart';
 
-final dioProvider = Provider<Dio>((ref) {
-  final dio = Dio(BaseOptions(baseUrl: _base, connectTimeout: const Duration(seconds: 10), receiveTimeout: const Duration(seconds: 30)));
-  dio.interceptors.add(InterceptorsWrapper(onRequest: (opts, handler) {
-    final token = HiveBoxes.jwtToken;
-    if (token != null) opts.headers['Authorization'] = 'Bearer $token';
-    handler.next(opts);
-  }));
-  return dio;
-});
+class ApiClient extends GetxService {
+  late final Dio _dio;
+  
+  static const String baseUrl = 'https://api.memolens.app/api';
+  // static const String baseUrl = 'http://localhost:3000/api'; // 本地调试
 
-final apiClientProvider = Provider<ApiClient>((ref) => ApiClient(ref.read(dioProvider)));
+  Dio get dio => _dio;
 
-class ApiClient {
-  final Dio _dio;
-  ApiClient(this._dio);
+  @override
+  void onInit() {
+    super.onInit();
+    _dio = Dio(BaseOptions(
+      baseUrl: baseUrl,
+      connectTimeout: const Duration(seconds: 10),
+      receiveTimeout: const Duration(seconds: 30),
+      headers: {'Content-Type': 'application/json'},
+    ));
 
-  Future<void> sendCode(String phone) async =>
-    _dio.post('/auth/send-code', data: {'phone': phone});
-
-  Future<String> verify(String phone, String code) async {
-    final r = await _dio.post('/auth/verify', data: {'phone': phone, 'code': code});
-    return r.data['token'] as String;
+    _dio.interceptors.add(InterceptorsWrapper(
+      onRequest: (options, handler) {
+        // 添加 Token
+        final token = Get.find<StorageService>().token;
+        if (token != null) {
+          options.headers['Authorization'] = 'Bearer $token';
+        }
+        return handler.next(options);
+      },
+      onResponse: (response, handler) {
+        return handler.next(response);
+      },
+      onError: (error, handler) {
+        _handleError(error);
+        return handler.next(error);
+      },
+    ));
   }
 
-  Future<Record> uploadRecord(String imagePath, String ocrText, List<String> tags) async {
-    final form = FormData.fromMap({
-      'image': await MultipartFile.fromFile(imagePath, filename: 'capture.jpg'),
-      'ocr_text': ocrText,
-      'user_tags': tags.join(','),
+  void _handleError(DioException error) {
+    String message;
+    switch (error.type) {
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.receiveTimeout:
+        message = '网络连接超时';
+        break;
+      case DioExceptionType.badResponse:
+        final statusCode = error.response?.statusCode;
+        if (statusCode == 401) {
+          message = '登录已过期，请重新登录';
+          Get.find<StorageService>().clearToken();
+          // Get.offAllNamed(Routes.login);
+        } else if (statusCode == 403) {
+          message = '没有权限';
+        } else if (statusCode == 404) {
+          message = '资源不存在';
+        } else if (statusCode == 429) {
+          message = '请求过于频繁，请稍后再试';
+        } else if (statusCode != null && statusCode >= 500) {
+          message = '服务器错误';
+        } else {
+          message = error.response?.data?['message'] ?? '请求失败';
+        }
+        break;
+      case DioExceptionType.cancel:
+        return;
+      default:
+        message = '网络连接失败，请检查网络';
+    }
+    EasyLoading.showError(message);
+  }
+
+  // GET
+  Future<Response> get(String path, {Map<String, dynamic>? params}) {
+    return _dio.get(path, queryParameters: params);
+  }
+
+  // POST
+  Future<Response> post(String path, {dynamic data}) {
+    return _dio.post(path, data: data);
+  }
+
+  // PATCH
+  Future<Response> patch(String path, {dynamic data}) {
+    return _dio.patch(path, data: data);
+  }
+
+  // DELETE
+  Future<Response> delete(String path) {
+    return _dio.delete(path);
+  }
+
+  // 上传文件
+  Future<Response> upload(String path, String filePath, {
+    String fieldName = 'file',
+    Map<String, dynamic>? extraData,
+    ProgressCallback? onSendProgress,
+  }) async {
+    final formData = FormData.fromMap({
+      fieldName: await MultipartFile.fromFile(filePath),
+      ...?extraData,
     });
-    final r = await _dio.post('/records/upload', data: form);
-    return Record.fromJson(r.data as Map<String, dynamic>);
-  }
-
-  Future<List<Record>> getRecords({int page = 1, String? type}) async {
-    final r = await _dio.get('/records', queryParameters: {'page': page, if (type != null) 'type': type});
-    return (r.data['data'] as List).map((e) => Record.fromJson(e as Map<String, dynamic>)).toList();
-  }
-
-  Future<Record> getRecord(String id) async {
-    final r = await _dio.get('/records/$id');
-    return Record.fromJson(r.data as Map<String, dynamic>);
-  }
-
-  Future<void> deleteRecord(String id) => _dio.delete('/records/$id');
-
-  Future<Map<String, dynamic>> ask(String question) async {
-    final r = await _dio.post('/search/ask', data: {'question': question});
-    return r.data as Map<String, dynamic>;
-  }
-
-  Future<AppUser> getMe() async {
-    final r = await _dio.get('/users/me');
-    return AppUser.fromJson(r.data as Map<String, dynamic>);
+    return _dio.post(path, data: formData, onSendProgress: onSendProgress);
   }
 }
